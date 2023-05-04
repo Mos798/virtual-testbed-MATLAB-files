@@ -1,0 +1,149 @@
+component self_controlled_mass_flow_source
+% Controlled Mass Flow Rate Source (2P)
+% This block represents an ideal mechanical energy source in a two-phase
+% fluid network that can maintain a controlled mass flow rate regardless of
+% the pressure differential. There is no flow resistance and no heat
+% exchange with the environment. The mass flow rate is set by the physical
+% signal port M [kg/s]. A positive value causes fluid to flow from port A
+% to port B.
+
+% Copyright 2013-2021 The MathWorks, Inc
+
+nodes
+    A = foundation.two_phase_fluid.two_phase_fluid; % A:left
+    B = foundation.two_phase_fluid.two_phase_fluid; % B:right
+end
+
+inputs
+    % Mass flow rate
+    M = {0, 'kg/s'}; % M:left
+    eff = {0, '1'}; 
+end
+
+parameters
+    power_spec = foundation.enum.power_spec.isentropic; % Power added
+    %                                                     1 - isentropic
+    %                                                     0 - none
+    area_A = {0.01, 'm^2'}; % Cross-sectional area at port A
+    area_B = {0.01, 'm^2'}; % Cross-sectional area at port B
+end
+
+% Parameter checks
+equations
+    assert(area_A > 0)
+    assert(area_B > 0)
+end
+
+variables (Access = protected)
+    mdot_A = {0, 'kg/s'}; % Mass flow rate into port A
+    mdot_B = {0, 'kg/s'}; % Mass flow rate into port B
+    Phi_A  = {0, 'kW'  }; % Energy flow rate into port A
+    Phi_B  = {0, 'kW'  }; % Energy flow rate into port B
+end
+
+branches
+    mdot_A : A.mdot -> *;
+    mdot_B : B.mdot -> *;
+    Phi_A  : A.Phi  -> *;
+    Phi_B  : B.Phi  -> *;
+end
+
+if power_spec == foundation.enum.power_spec.isentropic
+
+    variables (Access = private, ExternalAccess = none)
+        u_in_A  = {1500, 'kJ/kg'}; % Specific internal energy for inflow at port A
+        u_in_B  = {1500, 'kJ/kg'}; % Specific internal energy for inflow at port B
+        u_out_A = {1500, 'kJ/kg'}; % Specific internal energy for outflow at port A
+        u_out_B = {1500, 'kJ/kg'}; % Specific internal energy for outflow at port B
+    end
+
+    intermediates (Access = private, ExternalAccess = none)
+        % Compute change in specific entropy
+        [Ds_AB, ht_in_A, ht_out_B] = foundation.two_phase_fluid.sources.isentropic_relation( ...
+            A.p, B.p, u_in_A, u_out_B, mdot_A, area_A, area_B, ...
+            A.u_min, A.u_max, A.unorm_TLU, A.p_TLU, A.v_TLU, A.s_TLU, A.u_sat_liq_TLU, A.u_sat_vap_TLU);
+
+        [Ds_BA, ht_in_B, ht_out_A] = foundation.two_phase_fluid.sources.isentropic_relation( ...
+            B.p, A.p, u_in_B, u_out_A, mdot_B, area_B, area_A, ...
+            A.u_min, A.u_max, A.unorm_TLU, A.p_TLU, A.v_TLU, A.s_TLU, A.u_sat_liq_TLU, A.u_sat_vap_TLU);
+    end
+
+    % For logging
+%     equations
+%         if B.u >= 0.95*B.u_max
+%             eff==1/0.7;
+%         else
+%             eff==1/0.5;
+%         end
+%     end
+
+%     intermediates (Access = private)
+%         eff = if ge(B.u, 0.9*B.u_max), 1/.7 else 1/.5 end; % Power added to fluid flow
+%     end
+
+    intermediates (Access = private)
+%         eff = if ge(B.u, {440, 'kJ/kg'}), 1/.9 else 1/.6 end; % Power added to fluid flow
+        power = if ge(M, 0), eff*mdot_A*(ht_out_B - ht_in_A) else eff*mdot_B*(ht_out_A - ht_in_B) end; % Power added to fluid flow
+    end
+
+    equations
+        % Isentropic relation between inflow and outflow
+        Ds_AB == 0;
+        Ds_BA == 0;
+
+        % Specific total enthalpy for outflow
+        ht_out_A == convection_A.ht_I;
+        ht_out_B == convection_B.ht_I;
+    end
+
+else % power_spec == foundation.enum.power_spec.none
+
+    % For logging
+    intermediates (Access = private)
+        power = 0; % Power added to fluid flow
+    end
+
+end
+
+equations
+    % Commanded mass flow rate
+    mdot_A == M;
+
+    % Mass balance
+    mdot_A + mdot_B == 0;
+
+    % Energy balance
+    Phi_A + Phi_B + power == 0;
+
+    % Run-time variable checks
+    assert(A.p >= A.p_min, message('physmod:simscape:library:two_phase_fluid:PressureMinValid', 'A'))
+    assert(A.p <= A.p_max, message('physmod:simscape:library:two_phase_fluid:PressureMaxValid', 'A'))
+    assert(A.u >= A.u_min, message('physmod:simscape:library:two_phase_fluid:InternalEnergyMinValid', 'A'))
+    assert(A.u <= A.u_max, message('physmod:simscape:library:two_phase_fluid:InternalEnergyMaxValid', 'A'))
+    assert(B.p >= B.p_min, message('physmod:simscape:library:two_phase_fluid:PressureMinValid', 'B'))
+    assert(B.p <= B.p_max, message('physmod:simscape:library:two_phase_fluid:PressureMaxValid', 'B'))
+    assert(B.u >= B.u_min, message('physmod:simscape:library:two_phase_fluid:InternalEnergyMinValid', 'B'))
+    assert(B.u <= B.u_max, message('physmod:simscape:library:two_phase_fluid:InternalEnergyMaxValid', 'B'))
+end
+
+% Internal components that calculate energy convection at ports A and B
+components (ExternalAccess = none)
+    convection_A = foundation.two_phase_fluid.port_convection(flow_area = area_A, length_scale = sqrt(4*area_A/pi));
+    convection_B = foundation.two_phase_fluid.port_convection(flow_area = area_B, length_scale = sqrt(4*area_B/pi));
+end
+connections
+    connect(A, convection_A.port)
+    connect(B, convection_B.port)
+end
+
+% Equate variables for internal components that calculate energy convection at ports A and B
+equations
+    convection_A.mdot == mdot_A;
+    convection_A.Phi  == Phi_A;
+    convection_B.mdot == mdot_B;
+    convection_B.Phi  == Phi_B;
+
+    convection_A.ht_I == convection_B.ht_I;
+end
+
+end
